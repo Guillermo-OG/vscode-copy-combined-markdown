@@ -1,86 +1,132 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
+import * as path from "path";
 
-const expandDirectories = (fileUris: string[]) => {
+function getUrisFromCommandArgs(...args: any[]): vscode.Uri[] {
+  if (args.length > 1 && Array.isArray(args[1]) && args[1].length > 0) {
+    return args[1].filter(
+      (arg): arg is vscode.Uri => arg instanceof vscode.Uri
+    );
+  }
+
+  const candidates = args.flat(Infinity);
+  const uris = candidates
+    .map((item) => {
+      if (item instanceof vscode.Uri) {
+        return item;
+      }
+      if (item && item.resourceUri instanceof vscode.Uri) {
+        return item.resourceUri;
+      }
+      return null;
+    })
+    .filter((uri): uri is vscode.Uri => uri !== null);
+
+  const uniqueUriStrings = [...new Set(uris.map((uri) => uri.toString()))];
+  return uniqueUriStrings.map((str) => vscode.Uri.parse(str));
+}
+
+const expandDirectories = (fileUris: string[]): string[] => {
   let expandedFileUris: string[] = [];
-  fileUris.forEach((uri) => {
-    if (fs.lstatSync(uri).isDirectory()) {
-      const files = fs.readdirSync(uri).map((file) => `${uri}/${file}`);
-      expandedFileUris = expandedFileUris.concat(expandDirectories(files));
-    } else {
-      expandedFileUris.push(uri);
+  for (const uri of fileUris) {
+    try {
+      if (fs.existsSync(uri) && fs.lstatSync(uri).isDirectory()) {
+        const files = fs.readdirSync(uri).map((file) => path.join(uri, file));
+        expandedFileUris = expandedFileUris.concat(expandDirectories(files));
+      } else if (fs.existsSync(uri)) {
+        expandedFileUris.push(uri);
+      }
+    } catch (e) {
+      console.warn(
+        `[Copy Combined Markdown] Could not process path: ${uri}`,
+        e
+      );
     }
-  });
-
+  }
   return expandedFileUris;
 };
 
 export function activate(context: vscode.ExtensionContext) {
-  console.log(
-    'Congratulations, your extension "copy-combined-markdown" is now active!'
-  );
-
-  let disposable = vscode.commands.registerCommand(
+  const disposable = vscode.commands.registerCommand(
     "copy-combined-markdown.copy",
-    (_selectedFile: vscode.Uri, fileUris: vscode.Uri[]) => {
+    async (...args: any[]) => {
       try {
-        if (fileUris.length === 0) {
-          vscode.window.showInformationMessage("No files selected.");
+        const urisToProcess = getUrisFromCommandArgs(...args);
+
+        if (urisToProcess.length === 0) {
+          vscode.window.showInformationMessage(
+            "No valid files were found to process."
+          );
           return;
         }
 
-        const paths = fileUris.map((uri) => uri.fsPath);
+        const paths = urisToProcess.map((uri) => uri.fsPath);
+        const uniqueFileUris = [...new Set(expandDirectories(paths))];
 
-        // Expand directories recursively
-        let uniqueFileUris = [...new Set(expandDirectories(paths))];
-
-        Promise.all(
-          uniqueFileUris.map(async (path) => {
-            if (!fs.lstatSync(path).isDirectory()) {
-              const languageId = await vscode.workspace
-                .openTextDocument(path)
-                .then((doc) => doc.languageId);
-              const content = fs.readFileSync(path, "utf8");
-
-              // Count the longest sequence of '```' in the content
-              // and add one more to the end of the string
-              const longestSequence = content
-                .match(/`{3,}/g)
-                ?.reduce((acc, cur) => {
-                  return cur.length > acc.length ? cur : acc;
-                });
-              const numberOfBackticks = longestSequence
-                ? longestSequence.length + 1
-                : 3;
-              const backticks = "`".repeat(numberOfBackticks);
-
-              // Replace the project root path with a relative path
-              const workspaceFolders = vscode.workspace.workspaceFolders;
-              const workspaceFolder = workspaceFolders
-                ? workspaceFolders[0].uri.fsPath
-                : "";
-              const relativePath = path.replace(workspaceFolder, ".");
-
-              return `${relativePath}\n${backticks}${languageId}\n${content}\n${backticks}\n`;
-            } else {
-              return ""; // Return an empty string or handle directories differently if needed
+        const combinedMarkdownArray = await Promise.all(
+          uniqueFileUris.map(async (filePath) => {
+            if (
+              !fs.existsSync(filePath) ||
+              fs.lstatSync(filePath).isDirectory()
+            ) {
+              return null;
             }
-          })
-        )
-          .then((combinedMarkdownArray) => {
-            const combinedMarkdown = combinedMarkdownArray.join("\n");
-            vscode.env.clipboard.writeText(combinedMarkdown);
-            vscode.window.showInformationMessage(
-              `Combined markdown for ${combinedMarkdownArray.length} file${
-                combinedMarkdownArray.length !== 1 ? "s" : ""
-              } copied to clipboard!`
+
+            const languageId = await vscode.workspace
+              .openTextDocument(filePath)
+              .then(
+                (doc) => doc.languageId,
+                () => "plaintext"
+              );
+            const content = await fs.promises.readFile(filePath, "utf8");
+
+            const longestSequence = content
+              .match(/`{3,}/g)
+              ?.reduce((a, b) => (a.length > b.length ? a : b));
+            const numberOfBackticks = longestSequence
+              ? longestSequence.length + 1
+              : 3;
+            const backticks = "`".repeat(numberOfBackticks);
+
+            const workspaceFolder = vscode.workspace.getWorkspaceFolder(
+              vscode.Uri.file(filePath)
             );
+            const workspacePath = workspaceFolder
+              ? workspaceFolder.uri.fsPath
+              : "";
+
+            const relativePath = workspacePath
+              ? path.relative(workspacePath, filePath)
+              : filePath;
+            const normalizedPath = `./${relativePath.replace(/\\/g, "/")}`;
+
+            return `${normalizedPath}\n${backticks}${languageId}\n${content}\n${backticks}\n`;
           })
-          .catch((error) => {
-            vscode.window.showErrorMessage(`Error: ${error.message}`);
-          });
+        );
+
+        const filteredArray = combinedMarkdownArray.filter(
+          (item): item is string => item !== null
+        );
+
+        if (filteredArray.length === 0) {
+          vscode.window.showInformationMessage(
+            "No text files were found to copy."
+          );
+          return;
+        }
+
+        const combinedMarkdown = filteredArray.join("\n");
+        await vscode.env.clipboard.writeText(combinedMarkdown);
+        vscode.window.showInformationMessage(
+          `Combined markdown for ${filteredArray.length} file${
+            filteredArray.length !== 1 ? "s" : ""
+          } copied to clipboard!`
+        );
       } catch (error: any) {
-        vscode.window.showErrorMessage(`Error: ${(error as Error).message}`);
+        console.error("Copy Combined Markdown Error:", error);
+        vscode.window.showErrorMessage(
+          `An unexpected error occurred: ${error.message}`
+        );
       }
     }
   );

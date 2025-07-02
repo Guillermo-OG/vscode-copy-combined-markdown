@@ -2,7 +2,7 @@
   "name": "copy-combined-markdown",
   "displayName": "Copy Combined Markdown",
   "description": "Copy Combined Markdown is a Visual Studio Code plugin that allows you to select multiple files, right-click them, and generate a combined markdown file containing the content of all the selected files. This plugin is designed to provide context for ChatGPT.",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "skaramicke",
   "repository": {
     "type": "git",
@@ -16,21 +16,32 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "copy-combined-markdown.copy",
-        "title": "Copy Combined Markdown",
-        "group": "navigation"
+        "title": "Copy Combined Markdown"
       }
     ],
     "menus": {
       "explorer/context": [
         {
           "command": "copy-combined-markdown.copy",
-          "group": "navigation"
+          "group": "navigation@1"
+        }
+      ],
+      "scm/resourceState/context": [
+        {
+          "command": "copy-combined-markdown.copy",
+          "group": "1_modification@1"
+        }
+      ],
+      "explorer/openEditors/context": [
+        {
+          "command": "copy-combined-markdown.copy",
+          "group": "navigation@1",
+          "when": "resourceScheme == file"
         }
       ]
     }
